@@ -1817,6 +1817,7 @@ func isCommonNetReadError(err error) bool {
 // Serve a new connection.
 func (c *conn) serve(ctx context.Context) {
 	c.remoteAddr = c.rwc.RemoteAddr().String()
+	// localAddr写入context中
 	ctx = context.WithValue(ctx, LocalAddrContextKey, c.rwc.LocalAddr())
 	var inFlightResponse *response
 	defer func() {
@@ -1839,6 +1840,7 @@ func (c *conn) serve(ctx context.Context) {
 		}
 	}()
 
+	// 先判断是否为TLS类型链接，即协议是否为HTTPS？
 	if tlsConn, ok := c.rwc.(*tls.Conn); ok {
 		tlsTO := c.server.tlsHandshakeTimeout()
 		if tlsTO > 0 {
@@ -1885,15 +1887,20 @@ func (c *conn) serve(ctx context.Context) {
 	defer cancelCtx()
 
 	c.r = &connReader{conn: c}
+	// 读bufio
 	c.bufr = newBufioReader(c.r)
+	// 写bufio
 	c.bufw = newBufioWriterSize(checkConnErrorWriter{c}, 4<<10)
 
 	for {
+		// 读请求数据
+		// w是response
 		w, err := c.readRequest(ctx)
 		if c.r.remain != c.server.initialReadLimitSize() {
 			// If we read any bytes off the wire, we're active.
 			c.setState(c.rwc, StateActive, runHooks)
 		}
+		// 处理读错误
 		if err != nil {
 			const errorHeaders = "\r\nContent-Type: text/plain; charset=utf-8\r\nConnection: close\r\n\r\n"
 
@@ -1936,6 +1943,10 @@ func (c *conn) serve(ctx context.Context) {
 		}
 
 		// Expect 100 Continue support
+		// 100 continue参见https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/100
+		// HTTP 100 Continue 信息型状态响应码表示目前为止一切正常, 客户端应该继续请求, 如果已完成请求则忽略.
+		// 为了让服务器检查请求的首部, 客户端必须在发送请求实体前,
+		// 在初始化请求中发送 Expect: 100-continue 首部并接收 100 Continue 响应状态码.
 		req := w.req
 		if req.expectsContinue() {
 			if req.ProtoAtLeast(1, 1) && req.ContentLength != 0 {
@@ -1964,13 +1975,17 @@ func (c *conn) serve(ctx context.Context) {
 		// But we're not going to implement HTTP pipelining because it
 		// was never deployed in the wild and the answer is HTTP/2.
 		inFlightResponse = w
+		// very important function： ServeHTTP
 		serverHandler{c.server}.ServeHTTP(w, w.req)
 		inFlightResponse = nil
 		w.cancelCtx()
 		if c.hijacked() {
 			return
 		}
+
+		// 写响应，关闭请求body
 		w.finishRequest()
+		// 连接是否复用
 		if !w.shouldReuseConnection() {
 			if w.requestBodyLimitHit || w.closedRequestBodyEarly() {
 				c.closeWriteAndWait()
@@ -2887,6 +2902,8 @@ func (c ConnState) String() string {
 	return stateName[c]
 }
 
+// server处理器，里面只有一个指向server的指针？
+// 是什么写法呢？
 // serverHandler delegates to either the server's Handler or
 // DefaultServeMux and also handles "OPTIONS *" requests.
 type serverHandler struct {
@@ -2895,9 +2912,12 @@ type serverHandler struct {
 
 func (sh serverHandler) ServeHTTP(rw ResponseWriter, req *Request) {
 	handler := sh.srv.Handler
+	// 没有处理器，使用默认的DefaultServeMux
 	if handler == nil {
 		handler = DefaultServeMux
 	}
+	// HTTP 的 OPTIONS 方法 用于获取目的资源所支持的通信选项。
+	// 客户端可以对特定的 URL 使用 OPTIONS 方法，也可以对整站（通过将 URL 设置为“*”）使用该方法。
 	if req.RequestURI == "*" && req.Method == "OPTIONS" {
 		handler = globalOptionsHandler{}
 	}
@@ -2959,9 +2979,11 @@ func (srv *Server) ListenAndServe() error {
 		return ErrServerClosed
 	}
 	addr := srv.Addr
+	// 地址为空，addr = ":http"？？
 	if addr == "" {
 		addr = ":http"
 	}
+	// 创建监听指定地址的监听器
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		return err
@@ -3001,6 +3023,7 @@ var ErrServerClosed = errors.New("http: Server closed")
 // new service goroutine for each. The service goroutines read requests and
 // then call srv.Handler to reply to them.
 //
+// 应用层协议必须是h2
 // HTTP/2 support is only enabled if the Listener returns *tls.Conn
 // connections and they were configured with "h2" in the TLS
 // Config.NextProtos.
@@ -3036,8 +3059,12 @@ func (srv *Server) Serve(l net.Listener) error {
 	var tempDelay time.Duration // how long to sleep on accept failure
 
 	ctx := context.WithValue(baseCtx, ServerContextKey, srv)
+	// 用了一个 for 循环，通过 l.Accept不断接收从客户端传进来的请求连接。
+	// 当接收到了一个新的请求连接的时候，通过 srv.NewConn创建了一个连接结构（http.conn），
+	// 并创建一个 Goroutine 为这个请求连接对应服务（c.serve）
 	for {
 		rw, err := l.Accept()
+		// accept error有哪些情况？
 		if err != nil {
 			select {
 			case <-srv.getDoneChan():
@@ -3217,6 +3244,8 @@ func logf(r *Request, format string, args ...any) {
 //
 // The handler is typically nil, in which case the DefaultServeMux is used.
 //
+// TCP keep-alives 默认都是开启的吗？所有http的keep-alives是默认开启的吗？
+// 这里调用server.ListenAndServe()，创建HTTP服务端
 // ListenAndServe always returns a non-nil error.
 func ListenAndServe(addr string, handler Handler) error {
 	server := &Server{Addr: addr, Handler: handler}

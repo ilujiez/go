@@ -33,6 +33,7 @@ var newServers = map[string]newServerFunc{
 	},
 }
 
+// Server和TLS Server差别？
 func TestServer(t *testing.T) {
 	for _, name := range []string{"NewServer", "NewServerManual"} {
 		t.Run(name, func(t *testing.T) {
