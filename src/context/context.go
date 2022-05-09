@@ -45,6 +45,11 @@
 //
 // See https://blog.golang.org/context for example code for a server that uses
 // Contexts.
+
+// WithCancel / WithDeadline / WithTimeout ，它们的本质就是“通过定时器来自动触发终结通知”，
+// WithTimeout 设置若干秒后通知触发终结，WithDeadline 设置未来某个时间点触发终结。
+// 为一个父节点生成一个带有 Done 方法的子节点，并且返回子节点的 CancelFunc 函数句柄。
+// 当 WithTimeout 调用 CancelFunc 的时候，所有下游的 With 系列产生的 Context 都会从 Done 中收到消息。
 package context
 
 import (
@@ -221,6 +226,7 @@ func TODO() Context {
 // A CancelFunc does not wait for the work to stop.
 // A CancelFunc may be called by multiple goroutines simultaneously.
 // After the first call, subsequent calls to a CancelFunc do nothing.
+// CancelFunc 是主动让下游结束，而 Done 是被上游通知结束。
 type CancelFunc func()
 
 // WithCancel returns a copy of parent with a new Done channel. The returned
@@ -431,6 +437,10 @@ func (c *cancelCtx) cancel(removeFromParent bool, err error) {
 //
 // Canceling this context releases resources associated with it, so code should
 // call cancel as soon as the operations running in this Context complete.
+// 为一个父节点生成一个带有 Done 方法的子节点，并且返回子节点的 CancelFunc 函数句柄。
+// CancelFunc是主动让下游结束
+// 返回的Context是父Context的副本 cancelCtx: newCancelCtx(parent),
+// 如果parent的截止日期早于d，WithCancel(parent)，相当于返回一个和父Context一样的子Context
 func WithDeadline(parent Context, d time.Time) (Context, CancelFunc) {
 	if parent == nil {
 		panic("cannot create context from nil parent")

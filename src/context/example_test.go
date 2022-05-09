@@ -57,7 +57,9 @@ func ExampleWithCancel() {
 // This example passes a context with an arbitrary deadline to tell a blocking
 // function that it should abandon its work as soon as it gets to it.
 func ExampleWithDeadline() {
+	// 截止时间，当前时间+1s
 	d := time.Now().Add(shortDuration)
+	// 创建了一个有截止时间的context
 	ctx, cancel := context.WithDeadline(context.Background(), d)
 
 	// Even though ctx will be expired, it is good practice to call its

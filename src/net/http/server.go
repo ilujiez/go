@@ -525,8 +525,11 @@ func (w *response) finalTrailers() Header {
 type atomicBool int32
 
 func (b *atomicBool) isSet() bool { return atomic.LoadInt32((*int32)(b)) != 0 }
-func (b *atomicBool) setTrue()    { atomic.StoreInt32((*int32)(b), 1) }
-func (b *atomicBool) setFalse()   { atomic.StoreInt32((*int32)(b), 0) }
+
+// 用atomic 保证操作原子性
+// Golang 中，所有的赋值操作都不能保证是原子的
+func (b *atomicBool) setTrue()  { atomic.StoreInt32((*int32)(b), 1) }
+func (b *atomicBool) setFalse() { atomic.StoreInt32((*int32)(b), 0) }
 
 // declareTrailer is called for each Trailer header when the
 // response header is written. It notes that a header will need to be
@@ -2662,12 +2665,21 @@ type Server struct {
 	// about to start accepting requests.
 	// If BaseContext is nil, the default is context.Background().
 	// If non-nil, it must return a non-nil context.
+	// 根Context，一个请求中的Context是个树状结构
+	// 在树形逻辑链条上，一个节点其实有两个角色：一是下游树的管理者；二是上游树的被管理者，那么就对应需要有两个能力：
+	//一个是能让整个下游树结束的能力，也就是函数句柄 CancelFunc；
+	// 另外一个是在上游树结束的时候被通知的能力，也就是 Done() 方法。
+	// 同时因为通知是需要不断监听的，所以 Done() 方法需要通过 channel 作为返回值让使用方进行监听。
+	// BaseContext 用来为整个链条创建初始化 Context
+	// 如果没有设置的话，默认使用 context.Background()
 	BaseContext func(net.Listener) context.Context
 
 	// ConnContext optionally specifies a function that modifies
 	// the context used for a new connection c. The provided ctx
 	// is derived from the base context and has a ServerContextKey
 	// value.
+	// ConnContext 用来为每个连接封装 Context
+	//参数中的 context.Context 是从 BaseContext 继承来的
 	ConnContext func(ctx context.Context, c net.Conn) context.Context
 
 	inShutdown atomicBool // true when server is in shutdown
@@ -2760,11 +2772,13 @@ const shutdownPollIntervalMax = 500 * time.Millisecond
 // Once Shutdown has been called on a server, it may not be reused;
 // future calls to methods such as Serve will return ErrServerClosed.
 func (srv *Server) Shutdown(ctx context.Context) error {
+	// 修改server中的一个标记量
 	srv.inShutdown.setTrue()
 
 	srv.mu.Lock()
 	lnerr := srv.closeListenersLocked()
 	srv.closeDoneChanLocked()
+	// onShutdown []func() 回调函数
 	for _, f := range srv.onShutdown {
 		go f()
 	}
@@ -2782,9 +2796,11 @@ func (srv *Server) Shutdown(ctx context.Context) error {
 		return interval
 	}
 
+	// runtimeTimer：CPU消耗相比sleep要低
 	timer := time.NewTimer(nextPollInterval())
 	defer timer.Stop()
 	for {
+		// closeIdleConns(): 判断所有连接中的请求是否已经完成操作（是否处于 Idle 状态），如果完成，关闭连接，如果未完成，则跳过
 		if srv.closeIdleConns() && srv.numListeners() == 0 {
 			return lnerr
 		}
